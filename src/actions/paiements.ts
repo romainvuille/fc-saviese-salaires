@@ -2,7 +2,14 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+import { prisma } from '@/lib/db'
 import { succes, erreur } from '@/lib/utils'
+import {
+  genererPaiementsMensuels,
+  genererPaiementsTour,
+  genererPaiementsHoraires,
+  genererPaiementsCantines,
+} from '@/lib/metier/paiements'
 import type { ActionResult, Paiement, StatutPaiement, ResultatGeneration } from '@/types'
 
 // ============================================================
@@ -21,103 +28,60 @@ const filtresPaiementSchema = z.object({
 })
 
 // ============================================================
-// MOCK DATA
+// Mappings DB ↔ UI
 // ============================================================
 
-const MOCK_PAIEMENTS: Paiement[] = [
-  {
-    id: 'pay-001',
-    pay_code: 'PAY00001',
-    date_paiement: '2026-05-31',
-    personne_id: 'pers-001',
-    nom_complet: 'Ana Emery',
-    categorie: 'Soigneur',
-    periode: '05/2026',
-    type_paiement: 'Salaire',
-    brut: 800,
-    retenue_avs: 42.40,
-    retenue_ac: 8.80,
-    retenue_laa: 8.49,
-    retenue_alfa: 1.05,
-    total_retenues: 60.74,
-    net: 739.26,
-    statut: 'À valider',
-    date_virement: null,
-    bexio_ref: null,
-    fiche_url: null,
-    created_at: '2026-05-20T10:00:00Z',
-    updated_at: '2026-05-20T10:00:00Z',
-  },
-  {
-    id: 'pay-002',
-    pay_code: 'PAY00002',
-    date_paiement: '2026-05-31',
-    personne_id: 'pers-002',
-    nom_complet: 'Sergio Lopez',
-    categorie: 'Cantinier',
-    periode: '05/2026',
-    type_paiement: 'Salaire',
-    brut: 1320,
-    retenue_avs: 69.96,
-    retenue_ac: 14.52,
-    retenue_laa: 14.00,
-    retenue_alfa: 1.73,
-    total_retenues: 100.21,
-    net: 1219.79,
-    statut: 'À valider',
-    date_virement: null,
-    bexio_ref: null,
-    fiche_url: null,
-    created_at: '2026-05-20T10:05:00Z',
-    updated_at: '2026-05-20T10:05:00Z',
-  },
-  {
-    id: 'pay-003',
-    pay_code: 'PAY00003',
-    date_paiement: '2026-06-30',
-    personne_id: 'pers-003',
-    nom_complet: 'Jean-Baptiste Martin',
-    categorie: 'Coach J-B',
-    periode: 'T2 25-26',
-    type_paiement: 'Défraiement',
-    brut: 3500,
-    retenue_avs: 0,
-    retenue_ac: 0,
-    retenue_laa: 0,
-    retenue_alfa: 0,
-    total_retenues: 0,
-    net: 3500,
-    statut: 'Validé',
-    date_virement: null,
-    bexio_ref: null,
-    fiche_url: null,
-    created_at: '2026-05-01T09:00:00Z',
-    updated_at: '2026-05-15T14:00:00Z',
-  },
-  {
-    id: 'pay-004',
-    pay_code: 'PAY00004',
-    date_paiement: '2026-04-30',
-    personne_id: 'pers-001',
-    nom_complet: 'Ana Emery',
-    categorie: 'Soigneur',
-    periode: '04/2026',
-    type_paiement: 'Salaire',
-    brut: 800,
-    retenue_avs: 42.40,
-    retenue_ac: 8.80,
-    retenue_laa: 8.49,
-    retenue_alfa: 1.05,
-    total_retenues: 60.74,
-    net: 739.26,
-    statut: 'Payé',
-    date_virement: '2026-04-30',
-    bexio_ref: 'BXO-4441',
-    fiche_url: null,
-    created_at: '2026-04-20T10:00:00Z',
-    updated_at: '2026-04-30T16:00:00Z',
-  },
-]
+const STATUT_DB_TO_UI: Record<string, StatutPaiement> = {
+  AValider: 'À valider',
+  Valide:   'Validé',
+  Paye:     'Payé',
+  Annule:   'Annulé',
+}
+const STATUT_UI_TO_DB: Record<string, string> = {
+  'À valider': 'AValider',
+  'Validé':    'Valide',
+  'Payé':      'Paye',
+  'Annulé':    'Annule',
+}
+const TYPE_DB_TO_UI: Record<string, string> = {
+  Salaire:     'Salaire',
+  Defraiement: 'Défraiement',
+}
+
+// ============================================================
+// Helper de conversion Prisma → type métier
+// ============================================================
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function prismaToPayment(p: any): Paiement {
+  return {
+    id: p.id,
+    pay_code: p.pay_code,
+    date_paiement: p.date_paiement instanceof Date
+      ? p.date_paiement.toISOString().split('T')[0]
+      : String(p.date_paiement),
+    personne_id: p.personne_id,
+    nom_complet: p.nom_complet,
+    categorie: p.categorie,
+    periode: p.periode,
+    type_paiement: (TYPE_DB_TO_UI[p.type_paiement] ?? p.type_paiement) as Paiement['type_paiement'],
+    brut: Number(p.brut),
+    retenue_avs: Number(p.retenue_avs),
+    retenue_ac: Number(p.retenue_ac),
+    retenue_laa: Number(p.retenue_laa),
+    retenue_alfa: Number(p.retenue_alfa),
+    total_retenues: Number(p.total_retenues),
+    net: Number(p.net),
+    statut: (STATUT_DB_TO_UI[p.statut] ?? p.statut) as StatutPaiement,
+    date_virement: p.date_virement instanceof Date
+      ? p.date_virement.toISOString().split('T')[0]
+      : (p.date_virement ?? null),
+    bexio_ref: p.bexio_ref ?? null,
+    fiche_url: p.fiche_url ?? null,
+    created_at: p.created_at instanceof Date ? p.created_at.toISOString() : String(p.created_at),
+    updated_at: p.updated_at instanceof Date ? p.updated_at.toISOString() : String(p.updated_at),
+  }
+}
 
 // ============================================================
 // ACTIONS
@@ -135,35 +99,43 @@ export async function getPaiements(filters?: {
     const parsed = filtresPaiementSchema.safeParse(filters ?? {})
     if (!parsed.success) return erreur('Filtres invalides.')
 
-    let result = [...MOCK_PAIEMENTS]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {}
 
     if (parsed.data.statut) {
-      result = result.filter((p) => p.statut === parsed.data.statut)
+      where.statut = STATUT_UI_TO_DB[parsed.data.statut] ?? parsed.data.statut
     }
     if (parsed.data.periode) {
-      result = result.filter((p) => p.periode === parsed.data.periode)
+      where.periode = parsed.data.periode
     }
     if (parsed.data.type_paiement) {
-      result = result.filter((p) => p.type_paiement === parsed.data.type_paiement)
-    }
-    if (parsed.data.personne_search) {
-      const q = parsed.data.personne_search.toLowerCase()
-      result = result.filter(
-        (p) =>
-          p.nom_complet.toLowerCase().includes(q) ||
-          p.pay_code.toLowerCase().includes(q)
-      )
+      where.type_paiement =
+        parsed.data.type_paiement === 'Défraiement' ? 'Defraiement' : parsed.data.type_paiement
     }
     if (parsed.data.personne_id) {
-      result = result.filter((p) => p.personne_id === parsed.data.personne_id)
+      where.personne_id = parsed.data.personne_id
     }
     if (parsed.data.annee) {
-      result = result.filter((p) =>
-        p.date_paiement.startsWith(String(parsed.data.annee))
-      )
+      where.date_paiement = {
+        gte: new Date(parsed.data.annee, 0, 1),
+        lte: new Date(parsed.data.annee, 11, 31, 23, 59, 59),
+      }
+    }
+    if (parsed.data.personne_search) {
+      const q = parsed.data.personne_search
+      where.OR = [
+        { nom_complet: { contains: q, mode: 'insensitive' } },
+        { pay_code:    { contains: q, mode: 'insensitive' } },
+      ]
     }
 
-    return succes(result)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (prisma as any).paiement.findMany({
+      where,
+      orderBy: [{ date_paiement: 'desc' }, { pay_code: 'desc' }],
+    })
+
+    return succes(rows.map(prismaToPayment))
   } catch {
     return erreur('Erreur lors du chargement des paiements.')
   }
@@ -182,20 +154,23 @@ export async function updateStatutPaiement(
       return erreur('Une date de virement est requise pour le statut "Payé".')
     }
 
-    // TODO: prisma.paiement.update(...)
-    const paiement = MOCK_PAIEMENTS.find((p) => p.id === id)
-    if (!paiement) return erreur('Paiement introuvable.')
-
-    const updated: Paiement = {
-      ...paiement,
-      statut,
-      date_virement: dateVirement ?? paiement.date_virement,
-      updated_at: new Date().toISOString(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: Record<string, any> = {
+      statut: STATUT_UI_TO_DB[statut],
     }
+    if (dateVirement) {
+      data.date_virement = new Date(dateVirement)
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const updated = await (prisma as any).paiement.update({
+      where: { id },
+      data,
+    })
 
     revalidatePath('/paiements')
     revalidatePath('/dashboard')
-    return succes(updated)
+    return succes(prismaToPayment(updated))
   } catch {
     return erreur('Erreur lors de la mise à jour du statut.')
   }
@@ -213,12 +188,8 @@ export async function genererPaiements(
   try {
     // Validation des paramètres selon le type
     if (type === 'mensuel' || type === 'horaire') {
-      if (!params.mois || !params.annee) {
-        return erreur('Mois et année requis.')
-      }
-      if (params.mois < 1 || params.mois > 12) {
-        return erreur('Mois invalide (1-12).')
-      }
+      if (!params.mois || !params.annee) return erreur('Mois et année requis.')
+      if (params.mois < 1 || params.mois > 12) return erreur('Mois invalide (1-12).')
     }
     if (type === 'saisonnier') {
       if (!params.tour) return erreur('Tour requis (ex: T2 25-26).')
@@ -230,20 +201,24 @@ export async function genererPaiements(
       if (!params.periode_cantine) return erreur('Période cantine requise.')
     }
 
-    // TODO: Appeler les vraies fonctions de génération depuis @/lib/metier/paiements
-    // ex: genererPaiementsMensuels(annee, mois)
-    // Pour l'instant, mock
-    const result: ResultatGeneration = {
-      generes: 2,
-      ignores: 1,
-      erreurs: [],
-      paiements: MOCK_PAIEMENTS.slice(0, 2),
+    let result: ResultatGeneration
+
+    if (type === 'mensuel') {
+      result = await genererPaiementsMensuels(params.annee!, params.mois!)
+    } else if (type === 'saisonnier') {
+      result = await genererPaiementsTour(params.tour!)
+    } else if (type === 'horaire') {
+      result = await genererPaiementsHoraires(params.annee!, params.mois!)
+    } else {
+      result = await genererPaiementsCantines(params.periode_cantine!)
     }
 
     revalidatePath('/paiements')
     revalidatePath('/dashboard')
     return succes(result)
-  } catch {
-    return erreur('Erreur lors de la génération des paiements.')
+  } catch (err) {
+    return erreur(
+      `Erreur lors de la génération : ${err instanceof Error ? err.message : String(err)}`
+    )
   }
 }

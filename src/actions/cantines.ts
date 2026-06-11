@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+import { prisma } from '@/lib/db'
 import { succes, erreur } from '@/lib/utils'
 import type { ActionResult, Cantine, CantineFormData } from '@/types'
 
@@ -22,55 +23,53 @@ const cantineSchema = z.object({
 })
 
 // ============================================================
-// MOCK DATA
+// Mappings DB ↔ UI
 // ============================================================
 
-const MOCK_CANTINES: Cantine[] = [
-  {
-    id: 'cant-001',
-    periode: '2026-04',
-    cantine: 'Principale',
-    recette_brute: 4200,
-    charges: 820,
-    benefice_net: 3380,
-    part_club_60: 2028,
-    part_cantiniers_40: 1352,
-    personne_id: 'pers-002',
-    part_cantinier: 1352,
-    statut: 'Validé',
-    date_paiement: '2026-04-30',
-    notes: null,
-    created_at: '2026-05-01T08:00:00Z',
-  },
-  {
-    id: 'cant-002',
-    periode: '2026-05',
-    cantine: 'Principale',
-    recette_brute: 3800,
-    charges: 750,
-    benefice_net: 3050,
-    part_club_60: 1830,
-    part_cantiniers_40: 1220,
-    personne_id: 'pers-002',
-    part_cantinier: 1220,
-    statut: 'En attente',
-    date_paiement: null,
-    notes: 'Match en retard',
-    created_at: '2026-05-20T09:00:00Z',
-  },
-]
+const STATUT_DB_TO_UI: Record<string, string> = {
+  EnAttente: 'En attente',
+  Valide:    'Validé',
+}
+const STATUT_UI_TO_DB: Record<string, string> = {
+  'En attente': 'EnAttente',
+  'Validé':     'Valide',
+}
 
 // ============================================================
-// Calculs
+// Helper de calcul
 // ============================================================
 
-function calculerCantine(recette_brute: number, charges: number, part_cantinier_custom?: number) {
-  const benefice_net = recette_brute - charges
-  const part_club_60 = Math.round(benefice_net * 0.6 * 100) / 100
-  const part_cantiniers_40 = Math.round(benefice_net * 0.4 * 100) / 100
-  const part_cantinier = part_cantinier_custom ?? part_cantiniers_40
+function calculerCantine(recette_brute: number, charges: number) {
+  const benefice_net       = recette_brute - charges
+  const part_club_60       = Math.round(benefice_net * 0.6  * 100) / 100
+  const part_cantiniers_40 = Math.round(benefice_net * 0.4  * 100) / 100
+  return { benefice_net, part_club_60, part_cantiniers_40 }
+}
 
-  return { benefice_net, part_club_60, part_cantiniers_40, part_cantinier }
+// ============================================================
+// Helper de conversion Prisma → type métier
+// ============================================================
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function prismaToCantine(c: any): Cantine {
+  return {
+    id: c.id,
+    periode: c.periode,
+    cantine: c.cantine,
+    recette_brute:      Number(c.recette_brute),
+    charges:            Number(c.charges),
+    benefice_net:       Number(c.benefice_net),
+    part_club_60:       Number(c.part_club_60),
+    part_cantiniers_40: Number(c.part_cantiniers_40),
+    personne_id: c.personne_id,
+    part_cantinier: Number(c.part_cantinier),
+    statut: (STATUT_DB_TO_UI[c.statut] ?? c.statut) as Cantine['statut'],
+    date_paiement: c.date_paiement instanceof Date
+      ? c.date_paiement.toISOString().split('T')[0]
+      : (c.date_paiement ?? null),
+    notes: c.notes ?? null,
+    created_at: c.created_at instanceof Date ? c.created_at.toISOString() : String(c.created_at),
+  }
 }
 
 // ============================================================
@@ -83,52 +82,55 @@ export async function getCantines(filters?: {
   statut?: string
 }): Promise<ActionResult<Cantine[]>> {
   try {
-    let result = [...MOCK_CANTINES]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {}
+    if (filters?.periode) where.periode = filters.periode
+    if (filters?.cantine) where.cantine = filters.cantine
+    if (filters?.statut) where.statut = STATUT_UI_TO_DB[filters.statut] ?? filters.statut
 
-    if (filters?.periode) {
-      result = result.filter((c) => c.periode === filters.periode)
-    }
-    if (filters?.cantine) {
-      result = result.filter((c) => c.cantine === filters.cantine)
-    }
-    if (filters?.statut) {
-      result = result.filter((c) => c.statut === filters.statut)
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (prisma as any).cantine.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+    })
 
-    return succes(result)
+    return succes(rows.map(prismaToCantine))
   } catch {
     return erreur('Erreur lors du chargement des cantines.')
   }
 }
 
-export async function createCantine(
-  data: CantineFormData
-): Promise<ActionResult<Cantine>> {
+export async function createCantine(data: CantineFormData): Promise<ActionResult<Cantine>> {
   try {
     const validation = cantineSchema.safeParse(data)
     if (!validation.success) {
       return erreur(validation.error.issues[0]?.message ?? 'Données invalides.')
     }
 
-    const calculs = calculerCantine(
-      validation.data.recette_brute,
-      validation.data.charges
-    )
+    const calculs = calculerCantine(validation.data.recette_brute, validation.data.charges)
 
-    // TODO: prisma.cantine.create(...)
-    const nouvelleCantine = {
-      id: `cant-${Date.now()}`,
-      ...validation.data,
-      ...calculs,
-      cantine: validation.data.cantine,
-      statut: 'En attente',
-      date_paiement: validation.data.date_paiement ?? null,
-      notes: validation.data.notes ?? null,
-      created_at: new Date().toISOString(),
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const created = await (prisma as any).cantine.create({
+      data: {
+        periode:            validation.data.periode,
+        cantine:            validation.data.cantine,
+        recette_brute:      validation.data.recette_brute,
+        charges:            validation.data.charges,
+        benefice_net:       calculs.benefice_net,
+        part_club_60:       calculs.part_club_60,
+        part_cantiniers_40: calculs.part_cantiniers_40,
+        personne_id:        validation.data.personne_id,
+        part_cantinier:     calculs.part_cantiniers_40,
+        statut:             'EnAttente',
+        date_paiement:      validation.data.date_paiement
+                              ? new Date(validation.data.date_paiement)
+                              : null,
+        notes:              validation.data.notes ?? null,
+      },
+    })
 
     revalidatePath('/cantines')
-    return succes(nouvelleCantine as unknown as Cantine)
+    return succes(prismaToCantine(created))
   } catch {
     return erreur('Erreur lors de la création de la cantine.')
   }
@@ -138,21 +140,20 @@ export async function validerCantine(id: string): Promise<ActionResult<Cantine>>
   try {
     if (!id) return erreur('ID requis.')
 
-    const cantine = MOCK_CANTINES.find((c) => c.id === id)
-    if (!cantine) return erreur('Cantine introuvable.')
-    if (cantine.statut === 'Validé') {
-      return erreur('Cette cantine est déjà validée.')
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const existing = await (prisma as any).cantine.findUnique({ where: { id } })
+    if (!existing) return erreur('Cantine introuvable.')
+    if (existing.statut === 'Valide') return erreur('Cette cantine est déjà validée.')
 
-    // TODO: prisma.cantine.update(...)
-    const updated: Cantine = {
-      ...cantine,
-      statut: 'Validé',
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const updated = await (prisma as any).cantine.update({
+      where: { id },
+      data: { statut: 'Valide' },
+    })
 
     revalidatePath('/cantines')
     revalidatePath('/generer')
-    return succes(updated)
+    return succes(prismaToCantine(updated))
   } catch {
     return erreur('Erreur lors de la validation de la cantine.')
   }

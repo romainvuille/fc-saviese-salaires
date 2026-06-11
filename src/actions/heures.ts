@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+import { prisma } from '@/lib/db'
 import { succes, erreur } from '@/lib/utils'
 import { calculerHeuresDecimal, isHoraireValide } from '@/lib/metier/charges'
 import type { ActionResult, Heure, HeureFormData } from '@/types'
@@ -33,47 +34,26 @@ const heureSchema = z.object({
 )
 
 // ============================================================
-// MOCK DATA
+// Helper de conversion Prisma → type métier
 // ============================================================
 
-const MOCK_HEURES: Heure[] = [
-  {
-    id: 'heure-001',
-    personne_id: 'pers-002',
-    date_travail: '2026-05-03',
-    heure_debut: '09:00',
-    heure_fin: '15:00',
-    heures_decimal: 6,
-    activite: 'Match à domicile',
-    remarques: null,
-    created_at: '2026-05-03T16:00:00Z',
-    created_by: 'pers-002',
-  },
-  {
-    id: 'heure-002',
-    personne_id: 'pers-002',
-    date_travail: '2026-05-10',
-    heure_debut: '09:00',
-    heure_fin: '14:00',
-    heures_decimal: 5,
-    activite: 'Match à domicile',
-    remarques: 'Match reporté, service plus court',
-    created_at: '2026-05-10T15:00:00Z',
-    created_by: 'pers-002',
-  },
-  {
-    id: 'heure-003',
-    personne_id: 'pers-001',
-    date_travail: '2026-05-05',
-    heure_debut: '14:00',
-    heure_fin: '17:30',
-    heures_decimal: 3.5,
-    activite: 'Entraînement + soins',
-    remarques: null,
-    created_at: '2026-05-05T18:00:00Z',
-    created_by: 'pers-001',
-  },
-]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function prismaToHeure(h: any): Heure {
+  return {
+    id: h.id,
+    personne_id: h.personne_id,
+    date_travail: h.date_travail instanceof Date
+      ? h.date_travail.toISOString().split('T')[0]
+      : String(h.date_travail),
+    heure_debut: h.heure_debut,
+    heure_fin: h.heure_fin,
+    heures_decimal: Number(h.heures_decimal),
+    activite: h.activite,
+    remarques: h.remarques ?? null,
+    created_at: h.created_at instanceof Date ? h.created_at.toISOString() : String(h.created_at),
+    created_by: h.created_by,
+  }
+}
 
 // ============================================================
 // ACTIONS
@@ -85,28 +65,37 @@ export async function getHeures(filters?: {
   annee?: number
 }): Promise<ActionResult<Heure[]>> {
   try {
-    let result = [...MOCK_HEURES]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {}
 
     if (filters?.personne_id) {
-      result = result.filter((h) => h.personne_id === filters.personne_id)
+      where.personne_id = filters.personne_id
     }
-
     if (filters?.annee && filters?.mois) {
-      const prefix = `${filters.annee}-${String(filters.mois).padStart(2, '0')}`
-      result = result.filter((h) => h.date_travail.startsWith(prefix))
+      where.date_travail = {
+        gte: new Date(filters.annee, filters.mois - 1, 1),
+        lte: new Date(filters.annee, filters.mois, 0, 23, 59, 59),
+      }
     } else if (filters?.annee) {
-      result = result.filter((h) => h.date_travail.startsWith(String(filters.annee)))
+      where.date_travail = {
+        gte: new Date(filters.annee, 0, 1),
+        lte: new Date(filters.annee, 11, 31, 23, 59, 59),
+      }
     }
 
-    return succes(result)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (prisma as any).heure.findMany({
+      where,
+      orderBy: { date_travail: 'desc' },
+    })
+
+    return succes(rows.map(prismaToHeure))
   } catch {
     return erreur('Erreur lors du chargement des heures.')
   }
 }
 
-export async function createHeure(
-  data: HeureFormData
-): Promise<ActionResult<Heure>> {
+export async function createHeure(data: HeureFormData): Promise<ActionResult<Heure>> {
   try {
     const validation = heureSchema.safeParse(data)
     if (!validation.success) {
@@ -125,19 +114,23 @@ export async function createHeure(
       validation.data.heure_fin
     )
 
-    // TODO: prisma.heure.create(...)
-    const nouvelleHeure = {
-      id: `heure-${Date.now()}`,
-      ...validation.data,
-      heures_decimal,
-      remarques: validation.data.remarques ?? null,
-      created_at: new Date().toISOString(),
-      created_by: validation.data.personne_id,
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const created = await (prisma as any).heure.create({
+      data: {
+        personne_id:   validation.data.personne_id,
+        date_travail:  new Date(validation.data.date_travail),
+        heure_debut:   validation.data.heure_debut,
+        heure_fin:     validation.data.heure_fin,
+        heures_decimal,
+        activite:      validation.data.activite,
+        remarques:     validation.data.remarques ?? null,
+        created_by:    validation.data.personne_id,
+      },
+    })
 
     revalidatePath('/heures')
     revalidatePath(`/personnes/${validation.data.personne_id}`)
-    return succes(nouvelleHeure as unknown as Heure)
+    return succes(prismaToHeure(created))
   } catch {
     return erreur("Erreur lors de l'enregistrement des heures.")
   }
@@ -147,9 +140,12 @@ export async function deleteHeure(id: string): Promise<ActionResult> {
   try {
     if (!id) return erreur('ID requis.')
 
-    // TODO: prisma.heure.delete(...)
-    const heure = MOCK_HEURES.find((h) => h.id === id)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const heure = await (prisma as any).heure.findUnique({ where: { id } })
     if (!heure) return erreur('Heure introuvable.')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (prisma as any).heure.delete({ where: { id } })
 
     revalidatePath('/heures')
     revalidatePath(`/personnes/${heure.personne_id}`)

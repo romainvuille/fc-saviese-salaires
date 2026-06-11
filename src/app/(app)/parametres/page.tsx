@@ -1,9 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getParametres, updateParametres, getUsers, inviterUtilisateur, testerBexioApiKey } from '@/actions/parametres'
 import { fmtPct } from '@/lib/utils'
 import type { Parametre, Profile } from '@/types'
+
+const ANNEES_TAUX = [2025, 2026, 2027, 2028, 2029]
 
 export default function ParametresPage() {
   const [parametres, setParametres] = useState<Parametre[]>([])
@@ -12,11 +14,16 @@ export default function ParametresPage() {
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; msg: string } | null>(null)
 
-  // Valeurs locales
+  // Sélecteur d'année pour les taux
+  const [anneeTaux, setAnneeTaux] = useState(new Date().getFullYear())
+
+  // Valeurs locales des taux (pour l'année sélectionnée)
   const [tauxAVS, setTauxAVS] = useState('0.053')
   const [tauxAC, setTauxAC] = useState('0.011')
   const [tauxLAA, setTauxLAA] = useState('0.01061')
   const [tauxALFA, setTauxALFA] = useState('0.00131')
+
+  // Paramètres généraux
   const [anneeCivile, setAnneeCivile] = useState('2026')
   const [tourCourant, setTourCourant] = useState('T2 25-26')
   const [bexioKey, setBexioKey] = useState('')
@@ -32,6 +39,20 @@ export default function ParametresPage() {
   const [inviting, setInviting] = useState(false)
   const [inviteMsg, setInviteMsg] = useState<{ ok: boolean; msg: string } | null>(null)
 
+  // Charger les taux pour une année donnée depuis la liste de paramètres
+  const chargerTauxPourAnnee = useCallback((params: Parametre[], annee: number) => {
+    const get = (cle: string) => {
+      // Chercher d'abord la clé spécifique à l'année, puis la clé générique
+      const specific = params.find((p) => p.cle === `${cle}_${annee}`)?.valeur
+      const generic  = params.find((p) => p.cle === cle)?.valeur
+      return specific ?? generic ?? ''
+    }
+    setTauxAVS(get('taux_avs'))
+    setTauxAC(get('taux_ac'))
+    setTauxLAA(get('taux_laa'))
+    setTauxALFA(get('taux_alfa'))
+  }, [])
+
   useEffect(() => {
     async function load() {
       setLoading(true)
@@ -41,20 +62,27 @@ export default function ParametresPage() {
       setUsers(uResult.data ?? [])
 
       const get = (cle: string) => params.find((p) => p.cle === cle)?.valeur ?? ''
-      setTauxAVS(get('taux_avs'))
-      setTauxAC(get('taux_ac'))
-      setTauxLAA(get('taux_laa'))
-      setTauxALFA(get('taux_alfa'))
-      setAnneeCivile(get('annee_civile'))
+      const anneeParam = parseInt(get('annee_civile') || '2026', 10)
+      setAnneeCivile(get('annee_civile') || '2026')
       setTourCourant(get('tour_courant'))
       setBexioKey(get('bexio_api_key'))
       setMontantBonusJs(get('montant_bonus_js') || '500')
+
+      // Charger les taux pour l'année civile courante par défaut
+      const defaultAnnee = ANNEES_TAUX.includes(anneeParam) ? anneeParam : new Date().getFullYear()
+      setAnneeTaux(defaultAnnee)
+      chargerTauxPourAnnee(params, defaultAnnee)
+
       setLoading(false)
     }
     load()
-  }, [])
+  }, [chargerTauxPourAnnee])
 
-  
+  // Quand l'année change dans le sélecteur, recharger les taux
+  function handleAnneeChange(annee: number) {
+    setAnneeTaux(annee)
+    chargerTauxPourAnnee(parametres, annee)
+  }
 
   async function handleTestBexio() {
     setTestingBexio(true)
@@ -74,19 +102,52 @@ export default function ParametresPage() {
   async function handleSave() {
     setSaving(true)
     setSaveMsg(null)
+
+    // Sauvegarder les taux avec clé spécifique à l'année ET clé générique (si c'est l'année courante)
+    const tauxUpdates = [
+      { cle: `taux_avs_${anneeTaux}`,  valeur: tauxAVS  },
+      { cle: `taux_ac_${anneeTaux}`,   valeur: tauxAC   },
+      { cle: `taux_laa_${anneeTaux}`,  valeur: tauxLAA  },
+      { cle: `taux_alfa_${anneeTaux}`, valeur: tauxALFA },
+    ]
+
+    // Si l'année sélectionnée = année civile en cours → mettre à jour aussi les taux génériques
+    if (parseInt(anneeCivile, 10) === anneeTaux) {
+      tauxUpdates.push(
+        { cle: 'taux_avs',  valeur: tauxAVS  },
+        { cle: 'taux_ac',   valeur: tauxAC   },
+        { cle: 'taux_laa',  valeur: tauxLAA  },
+        { cle: 'taux_alfa', valeur: tauxALFA },
+      )
+    }
+
     const updates = [
-      { cle: 'taux_avs', valeur: tauxAVS },
-      { cle: 'taux_ac', valeur: tauxAC },
-      { cle: 'taux_laa', valeur: tauxLAA },
-      { cle: 'taux_alfa', valeur: tauxALFA },
-      { cle: 'annee_civile', valeur: anneeCivile },
-      { cle: 'tour_courant', valeur: tourCourant },
-      { cle: 'bexio_api_key', valeur: bexioKey },
+      ...tauxUpdates,
+      { cle: 'annee_civile',    valeur: anneeCivile    },
+      { cle: 'tour_courant',    valeur: tourCourant    },
+      { cle: 'bexio_api_key',   valeur: bexioKey       },
       { cle: 'montant_bonus_js', valeur: montantBonusJs },
     ]
+
     const result = await updateParametres(updates)
+    if (result.success) {
+      // Mettre à jour les paramètres locaux pour refléter les changements
+      setParametres((prev) => {
+        const next = [...prev]
+        for (const u of updates) {
+          const idx = next.findIndex((p) => p.cle === u.cle)
+          if (idx >= 0) {
+            next[idx] = { ...next[idx], valeur: u.valeur }
+          } else {
+            next.push({ id: u.cle, cle: u.cle, valeur: u.valeur, description: '', updated_at: new Date().toISOString() })
+          }
+        }
+        return next
+      })
+    }
+
     setSaveMsg(result.success
-      ? { ok: true, msg: 'Paramètres enregistrés.' }
+      ? { ok: true, msg: `Paramètres enregistrés pour ${anneeTaux}.` }
       : { ok: false, msg: result.error ?? 'Erreur' }
     )
     setSaving(false)
@@ -131,82 +192,89 @@ export default function ParametresPage() {
         </div>
       )}
 
-      {/* Taux sociaux */}
+      {/* Taux sociaux avec sélecteur d'année */}
       <SectionCard title="Taux sociaux">
+        {/* Sélecteur d'année */}
+        <div className="flex items-center gap-2 mb-5">
+          <span className="text-sm font-medium text-gray-600">Année :</span>
+          <div className="flex gap-1">
+            {ANNEES_TAUX.map((annee) => (
+              <button
+                key={annee}
+                onClick={() => handleAnneeChange(annee)}
+                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
+                  anneeTaux === annee
+                    ? 'bg-[#D31616] text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {annee}
+              </button>
+            ))}
+          </div>
+          {parseInt(anneeCivile, 10) === anneeTaux && (
+            <span className="text-xs text-[#D31616] font-medium border border-[#D31616]/30 bg-[#D31616]/5 px-2 py-0.5 rounded-full">
+              Année courante
+            </span>
+          )}
+        </div>
+
         <p className="text-sm text-gray-500 mb-4">
-          Taux prélevés sur les salaires soumis aux charges sociales.
+          Taux prélevés sur les salaires soumis aux charges sociales pour <strong>{anneeTaux}</strong>.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <TauxField
-            label="AVS (assurance vieillesse et survivants)"
-            value={tauxAVS}
-            onChange={setTauxAVS}
-          />
-          <TauxField
-            label="AC (assurance chômage)"
-            value={tauxAC}
-            onChange={setTauxAC}
-          />
-          <TauxField
-            label="LAA (assurance accidents)"
-            value={tauxLAA}
-            onChange={setTauxLAA}
-          />
-          <TauxField
-            label="ALFA (formation professionnelle)"
-            value={tauxALFA}
-            onChange={setTauxALFA}
-          />
+          <TauxField label="AVS (assurance vieillesse et survivants)" value={tauxAVS} onChange={setTauxAVS} />
+          <TauxField label="AC (assurance chômage)"                   value={tauxAC}  onChange={setTauxAC}  />
+          <TauxField label="LAA (assurance accidents)"                 value={tauxLAA} onChange={setTauxLAA} />
+          <TauxField label="ALFA (formation professionnelle)"          value={tauxALFA} onChange={setTauxALFA} />
         </div>
         <div className="mt-4 p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
-          <strong>Total charges :</strong>{' '}
+          <strong>Total charges {anneeTaux} :</strong>{' '}
           {fmtPct(
             (parseFloat(tauxAVS) || 0) +
-            (parseFloat(tauxAC) || 0) +
+            (parseFloat(tauxAC)  || 0) +
             (parseFloat(tauxLAA) || 0) +
-            (parseFloat(tauxALFA) || 0)
+            (parseFloat(tauxALFA)|| 0)
           )}
         </div>
       </SectionCard>
 
       {/* Paramètres généraux */}
       <SectionCard title="Paramètres généraux">
-        <div className="space-y-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Année civile</label>
-              <input
-                type="number"
-                value={anneeCivile}
-                onChange={(e) => setAnneeCivile(e.target.value)}
-                min={2020}
-                max={2030}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Tour courant</label>
-              <input
-                type="text"
-                value={tourCourant}
-                onChange={(e) => setTourCourant(e.target.value)}
-                placeholder="ex: T2 25-26"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Bonus diplôme J+S (CHF)</label>
-              <input
-                type="number"
-                value={montantBonusJs}
-                onChange={(e) => setMontantBonusJs(e.target.value)}
-                min={0}
-                step={50}
-                placeholder="ex: 500"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
-              />
-              <p className="text-xs text-gray-400 mt-1">Montant additionnel par tour pour les coachs avec diplôme J+S coché.</p>
-            </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Année civile</label>
+            <input
+              type="number"
+              value={anneeCivile}
+              onChange={(e) => setAnneeCivile(e.target.value)}
+              min={2020}
+              max={2030}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tour courant</label>
+            <input
+              type="text"
+              value={tourCourant}
+              onChange={(e) => setTourCourant(e.target.value)}
+              placeholder="ex: T2 25-26"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Bonus diplôme J+S (CHF)</label>
+            <input
+              type="number"
+              value={montantBonusJs}
+              onChange={(e) => setMontantBonusJs(e.target.value)}
+              min={0}
+              step={50}
+              placeholder="ex: 500"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D31616]/20"
+            />
+            <p className="text-xs text-gray-400 mt-1">Montant additionnel par tour pour les coachs avec diplôme J+S coché.</p>
           </div>
         </div>
       </SectionCard>
@@ -215,9 +283,7 @@ export default function ParametresPage() {
       <SectionCard title="Intégrations">
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Clé API Bexio
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Clé API Bexio</label>
             <div className="flex gap-2">
               <input
                 type={showBexioKey ? 'text' : 'password'}
@@ -258,7 +324,7 @@ export default function ParametresPage() {
           disabled={saving}
           className="bg-[#D31616] hover:bg-[#b91c1c] text-white font-semibold px-6 py-2.5 rounded-lg text-sm transition-colors disabled:opacity-60"
         >
-          {saving ? 'Enregistrement…' : 'Enregistrer les paramètres'}
+          {saving ? 'Enregistrement…' : `Enregistrer les paramètres ${anneeTaux}`}
         </button>
       </div>
 
