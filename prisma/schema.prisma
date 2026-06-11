@@ -1,0 +1,257 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  admin
+  manager
+  employee
+}
+
+enum ModePaiement {
+  Horaire
+  MensuelFixe     @map("Mensuel fixe")
+  SaisonnierFixe  @map("Saisonnier fixe")
+  BeneficeCantine @map("Bénéfice cantine")
+}
+
+enum StatutPersonne {
+  Actif
+  Inactif
+}
+
+enum TypePaiement {
+  Salaire
+  Defraiement @map("Défraiement")
+}
+
+enum StatutPaiement {
+  AValider   @map("À valider")
+  Valide     @map("Validé")
+  Paye       @map("Payé")
+  Annule     @map("Annulé")
+}
+
+enum StatutCantine {
+  EnAttente @map("En attente")
+  Valide    @map("Validé")
+}
+
+enum StatutBexio {
+  AExporter @map("À exporter")
+  Envoye    @map("Envoyé")
+  Erreur
+}
+
+model Profile {
+  id          String   @id @db.Uuid
+  email       String
+  nom         String
+  prenom      String
+  role        Role     @default(employee)
+  personne_id String?  @db.Uuid
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  personne Personne? @relation(fields: [personne_id], references: [id])
+
+  @@map("profiles")
+}
+
+model Parametre {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cle         String   @unique
+  valeur      String
+  description String   @default("")
+  updated_at  DateTime @updatedAt @db.Timestamptz
+
+  @@map("parametres")
+}
+
+model Bareme {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  categorie   String   @unique
+  description String   @default("")
+  montant_ref Decimal  @db.Decimal(10, 2)
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  @@map("bareme")
+}
+
+model Personne {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code            String         @unique
+  nom             String
+  prenom          String
+  categorie       String
+  mode            ModePaiement
+  taux_horaire    Decimal?       @db.Decimal(10, 2)
+  montant_mois    Decimal?       @db.Decimal(10, 2)
+  montant_saison  Decimal?       @db.Decimal(10, 2)
+  mois_payes      String         @default("")
+  iban            String         @default("")
+  numero_avs      String         @default("")
+  email           String         @default("")
+  statut          StatutPersonne @default(Actif)
+  sous_categorie  String         @default("")
+  soumis_charges  Boolean        @default(false)
+  diplome_js      String         @default("")
+  bonus_js        Boolean        @default(false)
+  cumul_ytd       Decimal        @default(0) @db.Decimal(10, 2)
+  created_at      DateTime       @default(now()) @db.Timestamptz
+  updated_at      DateTime       @updatedAt @db.Timestamptz
+
+  profiles  Profile[]
+  paiements Paiement[]
+  heures    Heure[]
+  cantines  Cantine[]
+
+  @@map("personnes")
+}
+
+model Paiement {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pay_code        String         @unique
+  date_paiement   DateTime       @db.Date
+  personne_id     String         @db.Uuid
+  nom_complet     String
+  categorie       String
+  periode         String
+  type_paiement   TypePaiement
+  brut            Decimal        @db.Decimal(10, 2)
+  retenue_avs     Decimal        @db.Decimal(10, 2)
+  retenue_ac      Decimal        @db.Decimal(10, 2)
+  retenue_laa     Decimal        @db.Decimal(10, 2)
+  retenue_alfa    Decimal        @db.Decimal(10, 2)
+  total_retenues  Decimal        @db.Decimal(10, 2)
+  net             Decimal        @db.Decimal(10, 2)
+  statut          StatutPaiement @default(AValider)
+  date_virement   DateTime?      @db.Date
+  bexio_ref       String?
+  fiche_url       String?
+  created_at      DateTime       @default(now()) @db.Timestamptz
+  updated_at      DateTime       @updatedAt @db.Timestamptz
+
+  personne     Personne      @relation(fields: [personne_id], references: [id])
+  bexio_export BexioExport?
+
+  @@unique([personne_id, periode])
+  @@map("paiements")
+}
+
+model Heure {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  personne_id     String   @db.Uuid
+  date_travail    DateTime @db.Date
+  heure_debut     String
+  heure_fin       String
+  heures_decimal  Decimal  @db.Decimal(5, 2)
+  activite        String
+  remarques       String?
+  created_at      DateTime @default(now()) @db.Timestamptz
+  created_by      String   @db.Uuid
+
+  personne Personne @relation(fields: [personne_id], references: [id])
+
+  @@map("heures")
+}
+
+model Cantine {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  periode             String
+  cantine             String
+  recette_brute       Decimal       @db.Decimal(10, 2)
+  charges             Decimal       @db.Decimal(10, 2)
+  benefice_net        Decimal       @db.Decimal(10, 2)
+  part_club_60        Decimal       @db.Decimal(10, 2)
+  part_cantiniers_40  Decimal       @db.Decimal(10, 2)
+  personne_id         String        @db.Uuid
+  part_cantinier      Decimal       @db.Decimal(10, 2)
+  statut              StatutCantine @default(EnAttente)
+  date_paiement       DateTime?     @db.Date
+  notes               String?
+  created_at          DateTime      @default(now()) @db.Timestamptz
+
+  personne Personne @relation(fields: [personne_id], references: [id])
+
+  @@map("cantines")
+}
+
+model BexioExport {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paiement_id   String      @unique @db.Uuid
+  date_ecriture DateTime    @db.Date
+  description   String
+  compte_debit  String
+  compte_credit String
+  montant       Decimal     @db.Decimal(10, 2)
+  bexio_ref     String?
+  statut        StatutBexio @default(AExporter)
+  erreur_msg    String?
+  created_at    DateTime    @default(now()) @db.Timestamptz
+
+  paiement Paiement @relation(fields: [paiement_id], references: [id])
+
+  @@map("bexio_exports")
+}
+
+
+// ============================================================
+// Arbitrage
+// ============================================================
+
+enum StatutMatch {
+  APlanifier  @map("À planifier")
+  Confirme    @map("Confirmé")
+  Joue        @map("Joué")
+  Annule      @map("Annulé")
+}
+
+enum StatutAvance {
+  AVerser  @map("À verser")
+  Verse    @map("Versé")
+  Solde    @map("Soldé")
+}
+
+model ArbitrageMatch {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  saison          String       // ex: "25-26"
+  numero_match    String?      // Spielnummer du CSV
+  date_match      DateTime     @db.Date
+  heure_match     String?
+  equipe          String       // ex: "FC Savièse", "FC Savièse 2"
+  ligue           String       // ex: "2. Int.", "4.", "Jun.C 1/S"
+  competition     String?      // Bezeichnung CSV
+  adversaire      String
+  lieu            String?
+  montant_chf     Decimal      @db.Decimal(10, 2)
+  statut          StatutMatch  @default(APlanifier)
+  notes           String?
+  created_at      DateTime     @default(now()) @db.Timestamptz
+
+  @@unique([saison, numero_match])
+  @@map("arbitrage_matches")
+}
+
+model ArbitrageAvance {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code            String       @unique  // ex: AVA001
+  saison          String
+  equipe          String
+  ligue           String
+  nb_matches      Int
+  montant_par_match Decimal    @db.Decimal(10, 2)
+  montant_total   Decimal      @db.Decimal(10, 2)
+  statut          StatutAvance @default(AVerser)
+  date_versement  DateTime?    @db.Date
+  notes           String?
+  created_at      DateTime     @default(now()) @db.Timestamptz
+  updated_at      DateTime     @updatedAt @db.Timestamptz
+
+  @@map("arbitrage_avances")
+}

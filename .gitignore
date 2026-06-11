@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Build output
+/.next/
+/out/
+/build
+
+# Environment variables
+.env*.local
+.env
+
+# Google Service Account key (NE JAMAIS COMMITTER)
+fc-saviese-salaires-*.json
+google-service-account.json
+
+# Debug
+npm-debug.log*
+
+# OS
+.DS_Store
+*.pem
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
