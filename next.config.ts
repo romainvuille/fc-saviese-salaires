@@ -6,8 +6,9 @@ const nextConfig: NextConfig = {
       allowedOrigins: ['*'],
     },
   },
-  // turbopack désactivé — bug "Next.js package not found" avec Next.js 16
-  // Nécessaire pour @react-pdf/renderer (module Node.js uniquement)
+  // Turbopack (Next.js 16 default) — config vide pour éviter l'erreur de build Vercel
+  turbopack: {},
+  // Webpack config pour @react-pdf/renderer (modules Node.js côté client)
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
