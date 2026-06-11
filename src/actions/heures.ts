@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
+import { createClient } from '@/lib/supabase/server'
 import { succes, erreur } from '@/lib/utils'
 import { calculerHeuresDecimal, isHoraireValide } from '@/lib/metier/charges'
 import type { ActionResult, Heure, HeureFormData } from '@/types'
@@ -97,6 +98,13 @@ export async function getHeures(filters?: {
 
 export async function createHeure(data: HeureFormData): Promise<ActionResult<Heure>> {
   try {
+    // Récupérer l'utilisateur authentifié (created_by = session user → FK auth.users valide)
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user?.id) {
+      return erreur('Utilisateur non authentifié.')
+    }
+
     const validation = heureSchema.safeParse(data)
     if (!validation.success) {
       return erreur(validation.error.issues[0]?.message ?? 'Données invalides.')
@@ -124,7 +132,7 @@ export async function createHeure(data: HeureFormData): Promise<ActionResult<Heu
         heures_decimal,
         activite:      validation.data.activite,
         remarques:     validation.data.remarques ?? null,
-        created_by:    validation.data.personne_id,
+        created_by:    user.id,  // ID auth.users de l'utilisateur connecté (respecte la FK)
       },
     })
 
